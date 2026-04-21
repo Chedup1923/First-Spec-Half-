@@ -1,0 +1,916 @@
+'use strict';
+
+/* ========== HELPERS ========== */
+const $ = id => document.getElementById(id);
+const q = sel => document.querySelector(sel);
+const qa = sel => document.querySelectorAll(sel);
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const ls = { get: k => { try{return JSON.parse(localStorage.getItem(k))}catch{return null} }, set: (k,v) => localStorage.setItem(k,JSON.stringify(v)), rm: k => localStorage.removeItem(k) };
+const uid = () => Math.random().toString(36).substr(2,9);
+const otp6 = () => Math.floor(100000+Math.random()*900000).toString();
+function timeAgo(ts) {
+  const diff = Date.now() - ts, m=60000, h=3600000, d=86400000;
+  if(diff<m) return 'just now';
+  if(diff<h) return Math.floor(diff/m)+'m ago';
+  if(diff<d) return Math.floor(diff/h)+'h ago';
+  return Math.floor(diff/d)+'d ago';
+}
+
+/* ========== STATE ========== */
+let currentRole = null;
+let currentUser = null;
+let loginEmail = '';
+let loginOtp = '';
+let fpOtp = '';
+let empPage = 1, admPage = 1;
+const PAGE_SIZE = 10;
+let empSort = 'date-desc', admSort = 'date-desc';
+let empSearch = '', admSearch = '', admStatusFilter = '';
+
+/* ========== THREE.JS BACKGROUND ========== */
+(function initThree() {
+  const canvas = $('bg-canvas');
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+  camera.position.z = 30;
+
+  const geo = new THREE.BufferGeometry();
+  const count = 900;
+  const pos = new Float32Array(count * 3);
+  for(let i=0;i<count*3;i++) pos[i] = (Math.random()-0.5)*120;
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({ color: 0x6366f1, size: 0.22, transparent: true, opacity: 0.6 });
+  const points = new THREE.Points(geo, mat);
+  scene.add(points);
+
+  // Connections mesh
+  const lineMat = new THREE.LineBasicMaterial({ color: 0x6366f1, transparent: true, opacity: 0.08 });
+  const lineGeo = new THREE.BufferGeometry();
+  const linePos = [];
+  for(let i=0;i<60;i++){
+    const a = (Math.random()-0.5)*80, b=(Math.random()-0.5)*80,c=(Math.random()-0.5)*30;
+    const d = a+(Math.random()-0.5)*20, e=b+(Math.random()-0.5)*20,f=c;
+    linePos.push(a,b,c,d,e,f);
+  }
+  lineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(linePos),3));
+  scene.add(new THREE.LineSegments(lineGeo, lineMat));
+
+  let mx=0, my=0;
+  document.addEventListener('mousemove', e=>{ mx=(e.clientX/window.innerWidth-0.5)*0.5; my=(e.clientY/window.innerHeight-0.5)*0.5; });
+
+  function resize() {
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', resize); resize();
+
+  let frame=0;
+  (function animate() {
+    requestAnimationFrame(animate);
+    frame++;
+    points.rotation.y += 0.0008 + mx*0.001;
+    points.rotation.x += 0.0003 + my*0.001;
+    camera.position.x += (mx*4 - camera.position.x) * 0.02;
+    camera.position.y += (-my*4 - camera.position.y) * 0.02;
+    renderer.render(scene, camera);
+  })();
+
+  window._threeAccent = function(hex) {
+    mat.color.setHex(hex);
+    lineMat.color.setHex(hex);
+  };
+})();
+
+/* ========== TOAST ========== */
+function toast(title, msg='', type='info') {
+  const icons = { success:'✅', error:'❌', warning:'⚠️', info:'ℹ️' };
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<div class="toast-icon">${icons[type]||'ℹ️'}</div><div class="toast-body"><div class="toast-title">${esc(title)}</div><div class="toast-msg">${esc(msg)}</div></div>`;
+  $('toast-container').appendChild(el);
+  gsap.to(el, { x:0, opacity:1, duration:0.4, ease:'back.out(1.7)', onComplete: ()=>{ setTimeout(()=>gsap.to(el,{x:120,opacity:0,duration:0.3,onComplete:()=>el.remove()}),3200); } });
+}
+
+/* ========== PAGE NAVIGATION ========== */
+function showPage(id) {
+  qa('.page').forEach(p => p.classList.remove('active'));
+  const pg = $(id);
+  if(pg) { pg.classList.add('active'); gsap.from(pg, {opacity:0, y:20, duration:0.5, ease:'power3.out'}); }
+}
+
+function goToWelcome() {
+  currentRole = null; currentUser = null;
+  showPage('welcome-page');
+}
+
+/* ========== WELCOME ========== */
+function selectRole(role) {
+  currentRole = role;
+  $('auth-role-label').textContent = role==='admin' ? 'Admin Access' : 'Employee Access';
+  $('register-subtitle').textContent = role==='admin' ? 'Register as Admin' : 'Register as Employee';
+  $('reg-dept-wrap').style.display = role==='employee' ? 'block' : 'none';
+  switchAuthTab('login');
+  showPage('auth-page');
+}
+
+/* ========== AUTH TABS ========== */
+function switchAuthTab(tab) {
+  qa('.auth-card').forEach(c=>c.classList.remove('active'));
+  qa('.auth-tab').forEach(t=>t.classList.remove('active'));
+  const tabMap = { login:0, register:1, forgot:2 };
+  qa('.auth-tab')[tabMap[tab]].classList.add('active');
+  const card = $('card-'+tab);
+  card.classList.add('active');
+  gsap.from(card, { scale:0.92, opacity:0, duration:0.45, ease:'back.out(1.5)' });
+
+  // Reset steps
+  if(tab==='login') { loginEmail=''; loginOtp=''; showLoginStep(1); }
+  if(tab==='forgot') { fpOtp=''; showFpStep(1); }
+}
+
+/* ========== LOGIN FLOW ========== */
+function showLoginStep(n) {
+  ['login-step1','login-step2','login-step3'].forEach((id,i)=>{ $(id).style.display = (i===n-1)?'block':'none'; });
+}
+
+function loginStep1() {
+  const email = $('login-email').value.trim();
+  if(!email || !/\S+@\S+\.\S+/.test(email)) { shakeEl('card-login'); toast('Invalid email','Please enter a valid email address','error'); return; }
+  loginEmail = email;
+  loginOtp = otp6();
+  $('login-demo-code').textContent = loginOtp;
+  showLoginStep(2);
+  gsap.from($('login-step2'),{opacity:0,y:10,duration:0.4,ease:'power2.out'});
+}
+
+function backToStep1() { showLoginStep(1); }
+
+function loginStep2() {
+  const inputs = qa('#login-otp-grid .otp-input');
+  const entered = Array.from(inputs).map(i=>i.value).join('');
+  if(entered.length<6) { shakeEl('card-login'); toast('Incomplete code','Enter all 6 digits','error'); return; }
+  if(entered !== loginOtp) { shakeEl('card-login'); qa('#login-otp-grid .otp-input').forEach(i=>{i.value='';i.classList.add('error')}); setTimeout(()=>qa('#login-otp-grid .otp-input').forEach(i=>i.classList.remove('error')),1500); toast('Wrong code','Please try the demo code shown','error'); return; }
+  showLoginStep(3);
+  gsap.from($('login-step3'),{opacity:0,y:10,duration:0.4,ease:'power2.out'});
+}
+
+function loginStep3() {
+  const pass = $('login-password').value;
+  if(!pass) { shakeEl('card-login'); toast('Password required','Enter your password','error'); return; }
+  // Check stored users
+  const users = ls.get('portal_users') || [];
+  const found = users.find(u => u.email===loginEmail && u.role===currentRole);
+  if(!found) {
+    // Allow demo login
+    if(pass==='demo1234') {
+      const demoUser = { id:uid(), email:loginEmail, name:loginEmail.split('@')[0], role:currentRole, dept:'General', createdAt:Date.now() };
+      const arr = ls.get('portal_users')||[]; arr.push(demoUser); ls.set('portal_users',arr);
+      finishLogin(demoUser);
+    } else { shakeEl('card-login'); toast('Account not found','Register first or use password: demo1234','error'); }
+    return;
+  }
+  if(found.password && found.password!==pass) { shakeEl('card-login'); toast('Wrong password','Try again','error'); return; }
+  if($('remember-me').checked) ls.set('portal_session', found.id);
+  finishLogin(found);
+}
+
+function finishLogin(user) {
+  currentUser = user;
+  ls.set('portal_session', user.id);
+  seedDemoData(user);
+  // Show dashboard immediately
+  showPage('dashboard-page');
+  setupDashboard();
+  // Fade out auth page in background
+  gsap.to($('auth-page'),{opacity:0,duration:0.4});
+  toast('Welcome back!', user.name+' signed in successfully','success');
+}
+
+function mockMicrosoftLogin() {
+  // For Microsoft login, show email input first
+  const defaultEmail = currentRole==='admin' ? 'admin@selise.com' : 'employee@selise.com';
+  const currentStep = parseInt(sessionStorage.getItem('ms_login_step')) || 1;
+  
+  if(currentStep === 1) {
+    // Step 1: Ask for registered email
+    sessionStorage.setItem('ms_login_step', '2');
+    const emailInput = $('login-email');
+    emailInput.value = defaultEmail;
+    emailInput.focus();
+    toast('Microsoft Login', 'Enter your registered email address', 'info');
+    loginStep1();
+  } else if(currentStep === 2) {
+    // Step 2: Verify OTP (skipped for Microsoft, go to password)
+    sessionStorage.setItem('ms_login_step', '3');
+    loginEmail = $('login-email').value.trim();
+    loginOtp = 'MS-VERIFIED';
+    showLoginStep(3);
+    gsap.from($('login-step3'),{opacity:0,y:10,duration:0.4,ease:'power2.out'});
+  } else if(currentStep === 3) {
+    // Step 3: Verify password
+    const pass = $('login-password').value;
+    if(!pass) { shakeEl('card-login'); toast('Password required','Enter your password','error'); return; }
+    const users = ls.get('portal_users') || [];
+    const email = $('login-email').value.trim();
+    const found = users.find(u => u.email===email && u.role===currentRole);
+    sessionStorage.removeItem('ms_login_step');
+    
+    if(!found) {
+      if(pass==='demo1234') {
+        const demoUser = { id:uid(), email:email, name:email.split('@')[0], role:currentRole, dept:'Engineering', createdAt:Date.now() };
+        const arr = ls.get('portal_users')||[]; arr.push(demoUser); ls.set('portal_users',arr);
+        finishLogin(demoUser);
+      } else { 
+        shakeEl('card-login'); 
+        toast('Account not found','Register first or use password: demo1234','error'); 
+        sessionStorage.setItem('ms_login_step', '1');
+      }
+      return;
+    }
+    if(found.password && found.password!==pass) { 
+      shakeEl('card-login'); 
+      toast('Wrong password','Try again','error');
+      sessionStorage.setItem('ms_login_step', '1');
+      return; 
+    }
+    finishLogin(found);
+  }
+}
+
+/* ========== REGISTER ========== */
+function doRegister() {
+  const fname = $('reg-fname').value.trim();
+  const lname = $('reg-lname').value.trim();
+  const email = $('reg-email').value.trim();
+  const pass = $('reg-password').value;
+  const confirm = $('reg-confirm').value;
+  const dept = currentRole==='employee' ? $('reg-dept').value : 'Administration';
+
+  if(!fname||!lname||!email||!pass||!confirm) { shakeEl('card-register'); toast('All fields required','Please fill in every field','error'); return; }
+  if(!/\S+@\S+\.\S+/.test(email)) { shakeEl('card-register'); toast('Invalid email','','error'); return; }
+  if(pass.length<10||pass.length>15) { shakeEl('card-register'); toast('Password length','Must be 10-15 characters','error'); return; }
+  if(pass!==confirm) { shakeEl('card-register'); toast('Passwords don\'t match','','error'); return; }
+  if(currentRole==='employee' && !dept) { toast('Select department','','error'); return; }
+
+  const users = ls.get('portal_users')||[];
+  if(users.find(u=>u.email===email)) { shakeEl('card-register'); toast('Email taken','This email is already registered','error'); return; }
+
+  const user = { id:uid(), email, name:fname+' '+lname, role:currentRole, dept, password:pass, createdAt:Date.now() };
+  users.push(user); ls.set('portal_users',users);
+  $('card-register').classList.add('glow');
+  setTimeout(()=>$('card-register').classList.remove('glow'),700);
+  toast('Account created!','You can now sign in','success');
+  switchAuthTab('login');
+  $('login-email').value = email;
+}
+
+/* ========== FORGOT PASSWORD ========== */
+function showFpStep(n) {
+  ['fp-step1','fp-step2','fp-step3'].forEach((id,i)=>{ $(id).style.display=(i===n-1)?'block':'none'; });
+  ['fp-dot-1','fp-dot-2','fp-dot-3'].forEach((id,i)=>{
+    const el = $(id);
+    if(i<n-1) { el.className='step-dot done'; el.textContent='✓'; }
+    else if(i===n-1) { el.className='step-dot active'; el.textContent=i+1; }
+    else { el.className='step-dot inactive'; el.textContent=i+1; }
+  });
+}
+
+function fpStep1() {
+  const email = $('fp-email').value.trim();
+  if(!email||!/\S+@\S+\.\S+/.test(email)) { shakeEl('card-forgot'); toast('Invalid email','','error'); return; }
+  fpOtp = otp6();
+  $('fp-demo-code').textContent = fpOtp;
+  showFpStep(2);
+}
+
+function fpStep2() {
+  const inputs = qa('#fp-otp-grid .otp-input');
+  const entered = Array.from(inputs).map(i=>i.value).join('');
+  if(entered !== fpOtp) { shakeEl('card-forgot'); toast('Wrong OTP','Check the demo code','error'); return; }
+  showFpStep(3);
+}
+
+function fpStep3() {
+  const np = $('fp-new-pass').value, cp = $('fp-confirm-pass').value;
+  if(!np||!cp) { toast('Fill in both fields','','error'); return; }
+  if(np!==cp) { shakeEl('card-forgot'); toast('Passwords don\'t match','','error'); return; }
+  if(np.length<10||np.length>15) { toast('Password length must be 10-15 chars','','warning'); return; }
+  const email = $('fp-email').value;
+  const users = ls.get('portal_users')||[];
+  const idx = users.findIndex(u=>u.email===email);
+  if(idx>=0) { users[idx].password = np; ls.set('portal_users',users); }
+  $('card-forgot').classList.add('glow');
+  setTimeout(()=>$('card-forgot').classList.remove('glow'),700);
+  toast('Password reset!','You can now sign in','success');
+  setTimeout(()=>switchAuthTab('login'),800);
+}
+
+/* ========== HELPERS FOR AUTH ========== */
+function toggleEye(id, btn) {
+  const inp = $(id);
+  if(inp.type==='password') { inp.type='text'; btn.textContent='🙈'; }
+  else { inp.type='password'; btn.textContent='👁'; }
+}
+
+function shakeEl(id) { const el=$(id); el.classList.add('shake'); setTimeout(()=>el.classList.remove('shake'),600); }
+
+function checkStrength(val, prefix='') {
+  const segs = ['s1','s2','s3','s4'].map(id=>$(prefix?prefix+id.slice(-1)===id?prefix+id:id:id));
+  const colors = ['var(--danger)','var(--warning)','var(--accent)','var(--success)'];
+  const labels = ['Too weak','Getting there','Good','Strong 💪'];
+  let score=0;
+  if(val.length>=10) score++;
+  if(/[A-Z]/.test(val)) score++;
+  if(/[a-z]/.test(val)) score++;
+  if(/[^a-zA-Z]/.test(val)) score++;
+  // find label
+  const labelEl = $(prefix ? 'fp-strength-label' : 'strength-label');
+  segs.forEach((s,i)=>{ if(s){ s.style.background = i<score ? colors[score-1] : 'var(--border)'; } });
+  if(labelEl) labelEl.textContent = val ? labels[score-1]||labels[0] : 'Enter a password';
+}
+
+function checkMatch() {
+  const p1=$('reg-password').value, p2=$('reg-confirm').value;
+  const el=$('match-status');
+  if(!p2) { el.textContent=''; return; }
+  if(p1===p2) { el.style.color='var(--success)'; el.textContent='✓ Passwords match'; }
+  else { el.style.color='var(--danger)'; el.textContent='✗ Passwords don\'t match'; }
+}
+
+function otpNext(el,gridId) {
+  el.value = el.value.replace(/\D/,'');
+  if(el.value && el.nextElementSibling && el.nextElementSibling.classList.contains('otp-input')) el.nextElementSibling.focus();
+}
+function otpBack(e,el,gridId) {
+  if(e.key==='Backspace' && !el.value && el.previousElementSibling && el.previousElementSibling.classList.contains('otp-input')) el.previousElementSibling.focus();
+}
+
+/* ========== LOGOUT ========== */
+function doLogout() {
+  ls.rm('portal_session'); currentUser=null; currentRole=null;
+  gsap.to($('dashboard-page'),{opacity:0,duration:0.3,onComplete:()=>{ showPage('welcome-page'); gsap.set($('dashboard-page'),{opacity:1}); }});
+  toast('Signed out','See you next time!','info');
+}
+
+/* ========== SEED DEMO DATA ========== */
+const DEMO_ITEMS = [
+  {category:'Writing Instruments',item:'Blue Ballpoint Pens (Pack of 10)',qty:2,urgency:'medium',notes:'Prefer BIC brand'},
+  {category:'Paper & Notebooks',item:'A4 Printing Paper (500 sheets)',qty:5,urgency:'high',notes:'For quarterly reports'},
+  {category:'Desk Accessories',item:'Sticky Notes (Multi-colour)',qty:3,urgency:'low',notes:''},
+  {category:'Folders & Binders',item:'Ring Binder A4 (Blue)',qty:4,urgency:'medium',notes:''},
+  {category:'Printing Supplies',item:'Black Ink Cartridge HP 302',qty:1,urgency:'high',notes:'Printer is almost out of ink'},
+];
+const DEMO_EMPLOYEES = [
+  {id:'demo-emp-1',email:'alice@selise.com',name:'Alice Chen',role:'employee',dept:'Engineering',createdAt:Date.now()-8.64e7*5},
+  {id:'demo-emp-2',email:'bob@selise.com',name:'Bob Martinez',role:'employee',dept:'Marketing',createdAt:Date.now()-8.64e7*3},
+  {id:'demo-emp-3',email:'carol@selise.com',name:'Carol Singh',role:'employee',dept:'HR',createdAt:Date.now()-8.64e7*1},
+];
+
+function seedDemoData(user) {
+  const users = ls.get('portal_users')||[];
+  DEMO_EMPLOYEES.forEach(e=>{ if(!users.find(u=>u.email===e.email)) users.push(e); });
+  ls.set('portal_users',users);
+
+  const requests = ls.get('portal_requests')||[];
+  if(requests.length===0) {
+    const empIds = ['demo-emp-1','demo-emp-2','demo-emp-3'];
+    const statuses = ['pending','approved','rejected','pending','approved'];
+    DEMO_ITEMS.forEach((item,i)=>{
+      requests.push({
+        id:uid(), empId:empIds[i%3], empName:DEMO_EMPLOYEES[i%3].name,
+        empDept:DEMO_EMPLOYEES[i%3].dept,
+        category:item.category, item:item.item, qty:item.qty,
+        urgency:item.urgency, notes:item.notes,
+        status:statuses[i], createdAt:Date.now()-8.64e7*(5-i),
+        updatedAt:Date.now()-8.64e7*(4-i), adminNote:''
+      });
+    });
+    ls.set('portal_requests',requests);
+  }
+
+  // Seed notifications for demo employees
+  const notifs = ls.get('portal_notifs')||{};
+  DEMO_EMPLOYEES.forEach(e=>{
+    if(!notifs[e.id]) notifs[e.id]=[];
+  });
+  const empRequests = requests.filter(r=>r.status!=='pending');
+  empRequests.forEach(r=>{
+    const key = 'req_'+r.id;
+    if(!notifs[r.empId]) notifs[r.empId]=[];
+    if(!notifs[r.empId].find(n=>n.key===key)){
+      notifs[r.empId].push({ id:uid(), key, type:r.status, title:r.status==='approved'?'Request Approved':'Request Rejected', msg:`Your request for "${r.item}" was ${r.status}.`, ts:r.updatedAt||Date.now() });
+    }
+  });
+  ls.set('portal_notifs',notifs);
+}
+
+/* ========== DASHBOARD SETUP ========== */
+function setupDashboard() {
+  const u = currentUser;
+  $('sidebar-avatar').textContent = u.name[0].toUpperCase();
+  $('sidebar-name').textContent = u.name;
+  $('sidebar-role').textContent = u.role==='admin'?'Administrator':'Employee';
+  $('topbar-title').textContent = 'Overview';
+
+  if(u.role==='admin') {
+    $('emp-nav').style.display='none';
+    $('adm-nav').style.display='block';
+    $('admin-badge').style.display='inline-flex';
+    renderAdminViews();
+  } else {
+    $('emp-nav').style.display='block';
+    $('adm-nav').style.display='none';
+    $('admin-badge').style.display='none';
+    renderEmployeeViews();
+  }
+  renderNotifPanel();
+  buildSettingsUI('shared-settings-emp');
+  buildSettingsUI('shared-settings-adm');
+}
+
+/* ========== EMPLOYEE DASHBOARD ========== */
+function getEmpRequests() {
+  const all = ls.get('portal_requests')||[];
+  return all.filter(r=>r.empId===currentUser.id);
+}
+
+function renderEmployeeViews() {
+  renderEmpStats();
+  renderEmpRecentTable();
+  renderEmpRequestsTable();
+  renderEmpProfile();
+  renderEmpNotifications();
+  updateEmpBadge();
+}
+
+function renderEmpStats() {
+  const reqs = getEmpRequests();
+  const pending = reqs.filter(r=>r.status==='pending').length;
+  const approved = reqs.filter(r=>r.status==='approved').length;
+  const rejected = reqs.filter(r=>r.status==='rejected').length;
+  $('emp-stats-grid').innerHTML = `
+    <div class="stat-card indigo"><div class="stat-icon">📋</div><div class="stat-label">Total Requests</div><div class="stat-value">${reqs.length}</div><div class="stat-sub">All time submissions</div></div>
+    <div class="stat-card indigo"><div class="stat-icon">⏳</div><div class="stat-label">Pending</div><div class="stat-value" style="color:var(--warning)">${pending}</div><div class="stat-sub">Awaiting review</div></div>
+    <div class="stat-card indigo"><div class="stat-icon">✅</div><div class="stat-label">Approved</div><div class="stat-value" style="color:var(--success)">${approved}</div><div class="stat-sub">Ready for dispatch</div></div>
+    <div class="stat-card indigo"><div class="stat-icon">❌</div><div class="stat-label">Rejected</div><div class="stat-value" style="color:var(--danger)">${rejected}</div><div class="stat-sub">See admin notes</div></div>
+  `;
+}
+
+function renderEmpRecentTable() {
+  const reqs = (ls.get('portal_requests')||[]).filter(r=>r.empId===currentUser.id).sort((a,b)=>b.createdAt-a.createdAt).slice(0,5);
+  $('emp-recent-table').innerHTML = reqs.length ? `<table>${empTableHead()}${empTableBody(reqs)}</table>` : emptyState('No requests yet. Submit your first request!');
+}
+
+function renderEmpRequestsTable() {
+  let reqs = (ls.get('portal_requests')||[]).filter(r=>r.empId===currentUser.id);
+  if(empSearch) reqs = reqs.filter(r=>r.item.toLowerCase().includes(empSearch)||r.category.toLowerCase().includes(empSearch));
+  reqs = sortRequests(reqs, empSort);
+  const total = reqs.length;
+  const pages = Math.ceil(total/PAGE_SIZE);
+  empPage = Math.min(empPage, pages||1);
+  const sliced = reqs.slice((empPage-1)*PAGE_SIZE, empPage*PAGE_SIZE);
+  $('emp-requests-table').innerHTML = sliced.length ? `<table>${empTableHead()}${empTableBody(sliced)}</table>` : emptyState('No requests found.');
+  renderPagination('emp-pagination', empPage, pages, p=>{ empPage=p; renderEmpRequestsTable(); });
+  updateEmpBadge();
+}
+
+function empTableHead() {
+  return `<thead><tr><th onclick="sortEmpRequests('item')">Item</th><th onclick="sortEmpRequests('category')">Category</th><th>Qty</th><th onclick="sortEmpRequests('urgency')">Urgency</th><th onclick="sortEmpRequests('status')">Status</th><th onclick="sortEmpRequests('date-desc')">Date</th></tr></thead>`;
+}
+
+function empTableBody(reqs) {
+  return `<tbody>${reqs.map(r=>`
+    <tr>
+      <td><div class="request-detail-row"><span class="req-name">${esc(r.item)}</span></div></td>
+      <td><span class="text-muted">${esc(r.category)}</span></td>
+      <td>${r.qty}</td>
+      <td>${urgencyBadge(r.urgency)}</td>
+      <td>${statusBadge(r.status)}${r.adminNote?`<div style="font-size:11px;color:var(--text-muted);margin-top:4px">📝 ${esc(r.adminNote)}</div>`:''}</td>
+      <td class="text-muted text-sm">${timeAgo(r.createdAt)}</td>
+    </tr>`).join('')}</tbody>`;
+}
+
+function updateEmpBadge() {
+  const reqs = getEmpRequests();
+  const n = $('emp-req-badge'); if(n) n.textContent = reqs.length;
+}
+
+function renderEmpProfile() {
+  const u = currentUser;
+  $('emp-profile-avatar').textContent = u.name[0].toUpperCase();
+  $('emp-profile-name').textContent = u.name;
+  $('emp-profile-email').textContent = u.email;
+  $('ep-name-val').textContent = u.name;
+  $('ep-email-val').textContent = u.email;
+  $('ep-dept-val').textContent = u.dept||'Not set';
+}
+
+function renderEmpNotifications() {
+  const notifs = (ls.get('portal_notifs')||{})[currentUser.id]||[];
+  const el = $('emp-notif-list');
+  if(!notifs.length) { el.innerHTML='<div class="empty-state"><div class="empty-icon">🔔</div><p>No notifications yet</p></div>'; return; }
+  el.innerHTML = notifs.sort((a,b)=>b.ts-a.ts).map(n=>`
+    <div style="display:flex;gap:14px;padding:16px 0;border-bottom:1px solid var(--border)">
+      <div style="font-size:1.4rem">${n.type==='approved'?'✅':'❌'}</div>
+      <div><div style="font-weight:600;font-size:0.88rem">${esc(n.title)}</div><div style="color:var(--text-muted);font-size:0.8rem;margin-top:3px">${esc(n.msg)}</div><div style="font-size:11px;color:var(--text-faint);margin-top:4px">${timeAgo(n.ts)}</div></div>
+    </div>`).join('');
+  const sidebar = $('emp-notif-sidebar-badge');
+  if(sidebar) sidebar.style.display = notifs.length?'inline':'none';
+}
+
+function filterEmpRequests(v) { empSearch=v.toLowerCase(); empPage=1; renderEmpRequestsTable(); }
+function sortEmpRequests(v) { empSort=v; empPage=1; renderEmpRequestsTable(); }
+
+/* ========== NEW REQUEST ========== */
+function submitRequest() {
+  const cat=$('req-category').value, item=$('req-item').value.trim(), qty=parseInt($('req-qty').value), urgency=$('req-urgency').value, notes=$('req-notes').value.trim();
+  if(!cat||!item||!qty||qty<1) { toast('Fill all required fields','Category, item and quantity are required','error'); return; }
+  const requests = ls.get('portal_requests')||[];
+  const req = { id:uid(), empId:currentUser.id, empName:currentUser.name, empDept:currentUser.dept||'General', category:cat, item, qty, urgency, notes, status:'pending', createdAt:Date.now(), updatedAt:Date.now(), adminNote:'' };
+  requests.push(req); ls.set('portal_requests',requests);
+  toast('Request submitted!','Your request is pending admin review','success');
+  clearRequestForm();
+  renderEmployeeViews();
+  switchView('emp-requests','emp-nav');
+}
+
+function clearRequestForm() {
+  ['req-category','req-item','req-qty','req-urgency','req-notes'].forEach(id=>{ const el=$(id); if(el){ if(el.tagName==='SELECT'){el.selectedIndex=0;}else{el.value='';} } });
+}
+
+/* ========== ADMIN DASHBOARD ========== */
+function getAllRequests() { return ls.get('portal_requests')||[]; }
+
+function renderAdminViews() {
+  renderAdmStats();
+  renderAdmRecentTable();
+  renderAdmRequestsTable();
+  renderAdmEmployees();
+  renderAdmProfile();
+  updateAdmBadge();
+}
+
+function renderAdmStats() {
+  const reqs = getAllRequests();
+  const pending=reqs.filter(r=>r.status==='pending').length;
+  const approved=reqs.filter(r=>r.status==='approved').length;
+  const rejected=reqs.filter(r=>r.status==='rejected').length;
+  const emps=(ls.get('portal_users')||[]).filter(u=>u.role==='employee').length;
+  $('adm-stats-grid').innerHTML = `
+    <div class="stat-card indigo"><div class="stat-icon">📋</div><div class="stat-label">Total Requests</div><div class="stat-value">${reqs.length}</div><div class="stat-sub">From all employees</div></div>
+    <div class="stat-card indigo"><div class="stat-icon">⏳</div><div class="stat-label">Pending Review</div><div class="stat-value" style="color:var(--warning)">${pending}</div><div class="stat-sub">Needs your action</div></div>
+    <div class="stat-card indigo"><div class="stat-icon">✅</div><div class="stat-label">Approved</div><div class="stat-value" style="color:var(--success)">${approved}</div><div class="stat-sub">Ready to dispatch</div></div>
+    <div class="stat-card indigo"><div class="stat-icon">👥</div><div class="stat-label">Employees</div><div class="stat-value" style="color:var(--accent)">${emps}</div><div class="stat-sub">Registered users</div></div>
+  `;
+}
+
+function updateAdmBadge() {
+  const pending = getAllRequests().filter(r=>r.status==='pending').length;
+  const n=$('adm-pending-badge'); if(n) n.textContent=pending;
+  const dot=$('notif-dot'); if(dot) dot.style.display=pending>0?'block':'none';
+}
+
+function renderAdmRecentTable() {
+  const reqs = getAllRequests().filter(r=>r.status==='pending').sort((a,b)=>b.createdAt-a.createdAt).slice(0,5);
+  $('adm-recent-table').innerHTML = reqs.length ? `<table>${admTableHead()}${admTableBody(reqs)}</table>` : emptyState('No pending requests 🎉');
+}
+
+function renderAdmRequestsTable() {
+  let reqs = getAllRequests();
+  if(admStatusFilter) reqs=reqs.filter(r=>r.status===admStatusFilter);
+  if(admSearch) reqs=reqs.filter(r=>r.item.toLowerCase().includes(admSearch)||r.empName.toLowerCase().includes(admSearch)||r.category.toLowerCase().includes(admSearch));
+  reqs = sortRequests(reqs,admSort);
+  const total=reqs.length, pages=Math.ceil(total/PAGE_SIZE);
+  admPage=Math.min(admPage,pages||1);
+  const sliced=reqs.slice((admPage-1)*PAGE_SIZE,admPage*PAGE_SIZE);
+  $('adm-requests-table').innerHTML = sliced.length ? `<table>${admTableHead()}${admTableBody(sliced)}</table>` : emptyState('No requests found.');
+  renderPagination('adm-pagination',admPage,pages,p=>{ admPage=p; renderAdmRequestsTable(); });
+}
+
+function admTableHead() {
+  return `<thead><tr><th>Employee</th><th>Item</th><th>Qty</th><th>Urgency</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead>`;
+}
+
+function admTableBody(reqs) {
+  return `<tbody>${reqs.map(r=>`
+    <tr>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="width:28px;height:28px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0">${esc(r.empName[0].toUpperCase())}</div>
+          <div><div style="font-weight:600;font-size:0.85rem">${esc(r.empName)}</div><div style="font-size:11px;color:var(--text-muted)">${esc(r.empDept)}</div></div>
+        </div>
+      </td>
+      <td><div class="request-detail-row"><span class="req-name">${esc(r.item)}</span><span class="req-cat">${esc(r.category)}</span></div></td>
+      <td>${r.qty}</td>
+      <td>${urgencyBadge(r.urgency)}</td>
+      <td>${statusBadge(r.status)}</td>
+      <td class="text-muted text-sm">${timeAgo(r.createdAt)}</td>
+      <td>
+        <div class="action-btns">
+          ${r.status==='pending'?`
+            <button class="btn btn-success-soft btn-sm" onclick="reviewRequest('${r.id}','approve')">✓ Approve</button>
+            <button class="btn btn-danger btn-sm" onclick="reviewRequest('${r.id}','reject')">✗ Reject</button>
+          `:`<span class="text-muted text-sm">${r.status==='approved'?'Approved':'Rejected'}</span>`}
+          <button class="btn btn-ghost btn-sm" onclick="viewRequestDetail('${r.id}')">👁</button>
+        </div>
+      </td>
+    </tr>`).join('')}</tbody>`;
+}
+
+function renderAdmEmployees() {
+  const emps = (ls.get('portal_users')||[]).filter(u=>u.role==='employee');
+  const html = emps.length ? `<table><thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Joined</th><th>Requests</th></tr></thead><tbody>
+    ${emps.map(e=>{
+      const reqs=(ls.get('portal_requests')||[]).filter(r=>r.empId===e.id);
+      return `<tr>
+        <td><div style="display:flex;align-items:center;gap:8px"><div style="width:28px;height:28px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff">${esc(e.name[0].toUpperCase())}</div>${esc(e.name)}</div></td>
+        <td class="text-muted">${esc(e.email)}</td>
+        <td>${esc(e.dept||'—')}</td>
+        <td class="text-muted text-sm">${timeAgo(e.createdAt)}</td>
+        <td>${reqs.length} <span class="text-muted text-sm">(${reqs.filter(r=>r.status==='pending').length} pending)</span></td>
+      </tr>`;}).join('')}
+  </tbody></table>` : emptyState('No employees registered yet');
+  $('adm-emp-table').innerHTML = html;
+}
+
+function renderAdmProfile() {
+  const u = currentUser;
+  $('adm-profile-avatar').textContent = u.name[0].toUpperCase();
+  $('adm-profile-name').textContent = u.name;
+  $('adm-profile-email').textContent = u.email;
+  $('ap-name-val').textContent = u.name;
+  $('ap-email-val').textContent = u.email;
+}
+
+function filterAdmRequests(v) { admSearch=v.toLowerCase(); admPage=1; renderAdmRequestsTable(); }
+function filterAdmStatus(v) { admStatusFilter=v; admPage=1; renderAdmRequestsTable(); }
+function sortAdmRequests(v) { admSort=v; admPage=1; renderAdmRequestsTable(); }
+
+/* ========== ADMIN ACTIONS ========== */
+function reviewRequest(reqId, action) {
+  const req = (ls.get('portal_requests')||[]).find(r=>r.id===reqId);
+  if(!req) return;
+  const title = action==='approve' ? 'Approve Request' : 'Reject Request';
+  $('modal-title').textContent = title;
+  $('modal-body').innerHTML = `
+    <div style="margin-bottom:16px">
+      <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:8px">Request by <strong>${esc(req.empName)}</strong></div>
+      <div style="font-size:0.9rem"><strong>${esc(req.item)}</strong> × ${req.qty}</div>
+      <div style="font-size:0.82rem;color:var(--text-muted);margin-top:4px">${esc(req.category)}</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Admin Note (optional)</label>
+      <textarea class="form-input" id="admin-note" placeholder="Add a note for the employee..." style="min-height:80px"></textarea>
+    </div>
+  `;
+  $('modal-footer').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+    <button class="btn ${action==='approve'?'btn-success-soft':'btn-danger'}" onclick="confirmReview('${reqId}','${action}')">${action==='approve'?'✓ Approve':'✗ Reject'}</button>
+  `;
+  openModal();
+}
+
+function confirmReview(reqId, action) {
+  const note = $('admin-note').value.trim();
+  const requests = ls.get('portal_requests')||[];
+  const idx = requests.findIndex(r=>r.id===reqId);
+  if(idx<0) return;
+  requests[idx].status = action==='approve' ? 'approved' : 'rejected';
+  requests[idx].adminNote = note;
+  requests[idx].updatedAt = Date.now();
+  ls.set('portal_requests',requests);
+
+  // Push notification to employee
+  const req = requests[idx];
+  const notifs = ls.get('portal_notifs')||{};
+  if(!notifs[req.empId]) notifs[req.empId]=[];
+  notifs[req.empId].push({ id:uid(), key:'req_'+req.id, type:action==='approve'?'approved':'rejected', title:action==='approve'?'Request Approved 🎉':'Request Rejected', msg:`Your request for "${req.item}"${note?' — '+note:' has been '+requests[idx].status+'.'}`, ts:Date.now() });
+  ls.set('portal_notifs',notifs);
+
+  closeModal();
+  toast(action==='approve'?'Request Approved':'Request Rejected', 'Employee notified.', action==='approve'?'success':'warning');
+  renderAdminViews();
+}
+
+function viewRequestDetail(reqId) {
+  const req = (ls.get('portal_requests')||[]).find(r=>r.id===reqId);
+  if(!req) return;
+  $('modal-title').textContent = 'Request Details';
+  $('modal-body').innerHTML = `
+    <div style="display:grid;gap:12px">
+      <div class="settings-row" style="padding:8px 0"><div><div class="settings-label">Employee</div><div class="settings-desc">${esc(req.empName)} — ${esc(req.empDept)}</div></div></div>
+      <div class="settings-row" style="padding:8px 0"><div><div class="settings-label">Item</div><div class="settings-desc">${esc(req.item)}</div></div></div>
+      <div class="settings-row" style="padding:8px 0"><div><div class="settings-label">Category</div><div class="settings-desc">${esc(req.category)}</div></div></div>
+      <div class="settings-row" style="padding:8px 0"><div><div class="settings-label">Quantity</div><div class="settings-desc">${req.qty}</div></div></div>
+      <div class="settings-row" style="padding:8px 0"><div><div class="settings-label">Urgency</div><div class="settings-desc">${urgencyBadge(req.urgency)}</div></div></div>
+      <div class="settings-row" style="padding:8px 0"><div><div class="settings-label">Status</div><div class="settings-desc">${statusBadge(req.status)}</div></div></div>
+      ${req.notes?`<div class="settings-row" style="padding:8px 0"><div><div class="settings-label">Notes</div><div class="settings-desc">${esc(req.notes)}</div></div></div>`:''}
+      ${req.adminNote?`<div class="settings-row" style="padding:8px 0"><div><div class="settings-label">Admin Note</div><div class="settings-desc">${esc(req.adminNote)}</div></div></div>`:''}
+      <div style="font-size:11px;color:var(--text-faint);text-align:right">Submitted ${timeAgo(req.createdAt)}</div>
+    </div>
+  `;
+  $('modal-footer').innerHTML = `<button class="btn btn-ghost" onclick="closeModal()">Close</button>`;
+  openModal();
+}
+
+/* ========== MODAL ========== */
+function openModal() { $('action-modal').classList.add('open'); }
+function closeModal() { $('action-modal').classList.remove('open'); }
+$('action-modal').addEventListener('click', e=>{ if(e.target===$('action-modal')) closeModal(); });
+
+/* ========== NOTIFICATIONS PANEL ========== */
+function renderNotifPanel() {
+  const u = currentUser;
+  if(!u) return;
+  const notifs = (ls.get('portal_notifs')||{})[u.id]||[];
+  const list = $('notif-panel-list');
+  if(!notifs.length) { list.innerHTML='<div class="notif-empty">🔔 No notifications yet</div>'; return; }
+  list.innerHTML = notifs.sort((a,b)=>b.ts-a.ts).map(n=>`
+    <div class="notif-item">
+      <div class="notif-item-icon ${n.type==='approved'?'success':'danger'}">${n.type==='approved'?'✅':'❌'}</div>
+      <div class="notif-item-body">
+        <div class="notif-item-title">${esc(n.title)}</div>
+        <div style="font-size:0.8rem;color:var(--text-muted)">${esc(n.msg)}</div>
+        <div class="notif-item-time">${timeAgo(n.ts)}</div>
+      </div>
+    </div>`).join('');
+}
+
+function toggleNotifPanel() {
+  const p = $('notif-panel');
+  p.classList.toggle('open');
+  renderNotifPanel();
+}
+
+function clearNotifPanel() {
+  const notifs = ls.get('portal_notifs')||{};
+  if(currentUser) notifs[currentUser.id]=[];
+  ls.set('portal_notifs',notifs);
+  renderNotifPanel();
+  $('notif-dot').style.display='none';
+}
+
+document.addEventListener('click', e=>{ if(!$('notif-panel').contains(e.target) && !$('notif-btn').contains(e.target)) $('notif-panel').classList.remove('open'); });
+
+/* ========== SETTINGS UI ========== */
+function buildSettingsUI(containerId) {
+  const el = $(containerId);
+  if(!el) return;
+  el.innerHTML = `
+    <div class="settings-section">
+      <div class="settings-card">
+        <div class="settings-row">
+          <div><div class="settings-label">Theme</div><div class="settings-desc">Switch between dark and light mode</div></div>
+          <div class="theme-toggle">
+            <button class="btn btn-ghost btn-sm" onclick="setTheme('dark')">🌙 Dark</button>
+            <button class="btn btn-ghost btn-sm" onclick="setTheme('light')">☀️ Light</button>
+          </div>
+        </div>
+        <div class="settings-row">
+          <div><div class="settings-label">Accent Colour</div><div class="settings-desc">Personalise the portal colour</div></div>
+          <div class="accent-grid">
+            <div class="accent-swatch ${ls.get('portal_accent')==='indigo'?'active':''}" style="background:#6366f1" onclick="setAccent('indigo','#6366f1')" title="Indigo"></div>
+            <div class="accent-swatch ${ls.get('portal_accent')==='violet'?'active':''}" style="background:#8b5cf6" onclick="setAccent('violet','#8b5cf6')" title="Violet"></div>
+            <div class="accent-swatch ${ls.get('portal_accent')==='cyan'?'active':''}" style="background:#06b6d4" onclick="setAccent('cyan','#06b6d4')" title="Cyan"></div>
+            <div class="accent-swatch ${ls.get('portal_accent')==='rose'?'active':''}" style="background:#f43f5e" onclick="setAccent('rose','#f43f5e')" title="Rose"></div>
+            <div class="accent-swatch ${ls.get('portal_accent')==='emerald'?'active':''}" style="background:#10b981" onclick="setAccent('emerald','#10b981')" title="Emerald"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="section-title" style="margin-bottom:12px">Data Management</div>
+      <div class="settings-card">
+        <div class="settings-row">
+          <div><div class="settings-label">Clear All Requests</div><div class="settings-desc">Remove all request data (demo seed remains)</div></div>
+          <button class="btn btn-danger btn-sm" onclick="clearAllRequests()">Clear Data</button>
+        </div>
+        <div class="settings-row">
+          <div><div class="settings-label">Sign Out</div><div class="settings-desc">End your current session</div></div>
+          <button class="btn btn-ghost btn-sm" onclick="doLogout()">Sign Out →</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function clearAllRequests() {
+  ls.rm('portal_requests'); ls.rm('portal_notifs');
+  toast('Data cleared','Demo data will reload on next login','info');
+  if(currentUser) { seedDemoData(currentUser); renderAdminViews(); renderEmployeeViews(); }
+}
+
+function setTheme(t) {
+  document.documentElement.setAttribute('data-theme',t);
+  ls.set('portal_theme',t);
+  toast('Theme updated','','info');
+}
+
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute('data-theme');
+  setTheme(cur==='dark'?'light':'dark');
+}
+
+const ACCENT_HEX = { indigo:'0x6366f1', violet:'0x8b5cf6', cyan:'0x06b6d4', rose:'0xf43f5e', emerald:'0x10b981' };
+function setAccent(name, hex) {
+  document.documentElement.setAttribute('data-accent',name);
+  ls.set('portal_accent',name);
+  if(window._threeAccent) window._threeAccent(parseInt(ACCENT_HEX[name]));
+  toast('Accent updated','','info');
+  buildSettingsUI('shared-settings-emp');
+  buildSettingsUI('shared-settings-adm');
+}
+
+/* ========== VIEW SWITCHING ========== */
+function switchView(viewId, navId) {
+  qa('#main-content .view').forEach(v=>v.classList.remove('active'));
+  const v=$(viewId); if(!v) return;
+  v.classList.add('active');
+  gsap.from(v,{opacity:0,y:16,duration:0.35,ease:'power2.out'});
+
+  qa('#'+navId+' .nav-item').forEach(n=>n.classList.remove('active'));
+  const matchingNav = Array.from(qa('#'+navId+' .nav-item')).find(n=>n.getAttribute('onclick')&&n.getAttribute('onclick').includes(viewId));
+  if(matchingNav) matchingNav.classList.add('active');
+
+  const titles = { 'emp-overview':'Overview','emp-requests':'My Requests','emp-new-request':'New Request','emp-notifications':'Notifications','emp-profile':'Profile','emp-settings':'Settings','adm-overview':'Overview','adm-requests':'All Requests','adm-employees':'Employees','adm-profile':'Profile','adm-settings':'Settings' };
+  $('topbar-title').textContent = titles[viewId]||viewId;
+
+  // Refresh data on view
+  if(viewId==='emp-requests') renderEmpRequestsTable();
+  if(viewId==='emp-overview') renderEmployeeViews();
+  if(viewId==='adm-overview') renderAdminViews();
+  if(viewId==='adm-requests') renderAdmRequestsTable();
+  if(viewId==='adm-employees') renderAdmEmployees();
+  if(viewId==='emp-notifications') renderEmpNotifications();
+  if(viewId==='emp-profile') renderEmpProfile();
+  if(viewId==='adm-profile') renderAdmProfile();
+}
+
+/* ========== PAGINATION ========== */
+function renderPagination(containerId, currentPage, totalPages, onPage) {
+  const el=$(containerId); if(!el) return;
+  if(totalPages<=1) { el.innerHTML=''; return; }
+  const start=(currentPage-1)*PAGE_SIZE+1;
+  let html=`<div class="page-info">Page ${currentPage} of ${totalPages}</div>`;
+  html+=`<button class="page-btn" onclick="(${onPage})(${currentPage-1})" ${currentPage<=1?'disabled':''}>‹</button>`;
+  for(let p=1;p<=totalPages;p++){
+    if(p===1||p===totalPages||Math.abs(p-currentPage)<=1) html+=`<button class="page-btn ${p===currentPage?'active':''}" onclick="(${onPage})(${p})">${p}</button>`;
+    else if(Math.abs(p-currentPage)===2) html+=`<span style="color:var(--text-faint);padding:0 4px">…</span>`;
+  }
+  html+=`<button class="page-btn" onclick="(${onPage})(${currentPage+1})" ${currentPage>=totalPages?'disabled':''}>›</button>`;
+  el.innerHTML=html;
+}
+
+/* ========== SORT ========== */
+function sortRequests(arr, mode) {
+  const u = { high:3, medium:2, low:1 };
+  switch(mode) {
+    case 'date-asc': return [...arr].sort((a,b)=>a.createdAt-b.createdAt);
+    case 'date-desc': return [...arr].sort((a,b)=>b.createdAt-a.createdAt);
+    case 'urgency': return [...arr].sort((a,b)=>u[b.urgency]-u[a.urgency]);
+    case 'status': return [...arr].sort((a,b)=>a.status.localeCompare(b.status));
+    default: return arr;
+  }
+}
+
+/* ========== BADGES ========== */
+function statusBadge(s) {
+  const m = { pending:'badge-pending', approved:'badge-approved', rejected:'badge-rejected' };
+  const icons = { pending:'⏳', approved:'✅', rejected:'❌' };
+  return `<span class="badge ${m[s]||''}">${icons[s]||''}${s}</span>`;
+}
+function urgencyBadge(u) {
+  const m = { low:'badge-low', medium:'badge-medium', high:'badge-high' };
+  const icons = { low:'🟢', medium:'🟡', high:'🔴' };
+  return `<span class="badge ${m[u]||''}">${icons[u]||''}${u}</span>`;
+}
+function emptyState(msg) {
+  return `<div class="empty-state"><div class="empty-icon">📭</div><p>${esc(msg)}</p></div>`;
+}
+
+/* ========== INIT ========== */
+(function init() {
+  // Restore preferences
+  const theme = ls.get('portal_theme')||'dark';
+  document.documentElement.setAttribute('data-theme',theme);
+  const accent = ls.get('portal_accent')||'indigo';
+  document.documentElement.setAttribute('data-accent',accent);
+  if(window._threeAccent) window._threeAccent(parseInt(ACCENT_HEX[accent]));
+
+  // Check session
+  const sessionId = ls.get('portal_session');
+  if(sessionId) {
+    const users = ls.get('portal_users')||[];
+    const user = users.find(u=>u.id===sessionId);
+    if(user) { currentUser=user; currentRole=user.role; seedDemoData(user); setTimeout(()=>{ showPage('dashboard-page'); setupDashboard(); },600); }
+  }
+
+  // Hide loading
+  setTimeout(()=>{
+    const lo=$('loading-overlay');
+    gsap.to(lo,{opacity:0,duration:0.5,onComplete:()=>lo.remove()});
+  },800);
+})();

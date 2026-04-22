@@ -1,13 +1,13 @@
 Spec: Office Supply Request Management
 
-1. Problem / Why
+1. Problem / Why:
 The current informal method of requesting office supplies through verbal communication or chat leads to poor recordkeeping, lack of transparency and accountability, and unexpected shortages, making it difficult for admins to track usage and manage inventory effectively. To address these issues, a centralized digital system is needed to record all requests in a structured manner, provide clear visibility of request status, and enable better monitoring and planning, ultimately ensuring a more organized, reliable, and efficient process.
 
-3. User Story
+3. User Story:
 As an employee, I want to submit office supply requests through a structured system so that my requests are properly recorded and processed without confusion or delay.
 As an admin, I want to view, manage, and track all supply requests so that I can efficiently control inventory and ensure fair distribution of resources.
 
-5. Acceptance Criteria
+5. Acceptance Criteria:
 •	Given the user is logged into the system, When they select Create Request, Then they must be able to enter item details including category, name, quantity, and urgency level.
 •	Given a request is submitted, When the system processes it, Then it must be saved and visible in the admin dashboard.
 •	Given a request exists, When the admin reviews it, Then they must be able to update its status to 'Approved' or 'Issued'.
@@ -15,7 +15,7 @@ As an admin, I want to view, manage, and track all supply requests so that I can
 “Thank you la, your request has been recorded.”
 •	Given a request quantity exceeds 30, When it is submitted, Then it must be flagged as “Manager Approval Required”.
 
-6. UI Notes / Sketch
+6. UI Notes / Sketch:
    
 Key Features Required
 
@@ -135,7 +135,7 @@ Notification Panel: Rightside dropdown with all notifications
 Notification Badge: Shows unread notification count
 Autodismiss: Toasts disappear after 3 seconds
 
-7. Edge Cases
+7. Edge Cases:
 •	Bulk Requests:
 If a user requests more than 30 items, the system must flag it and prevent direct approval without manager review.
 •	Out of Stock:
@@ -145,7 +145,7 @@ If a user makes a verbal request, admins must instruct them to submit it through
 •	Duplicate Requests:
 If the same user submits multiple requests for the same item within a short time, the system may flag it for review.
 
-8. Out of Scope
+8. Out of Scope:
 •	Procurement or purchasing from external vendors
 •	Real-time inventory tracking system
 •	Email automation (for demo version)
